@@ -24,8 +24,11 @@ BLOCK_STATUSES = frozenset({403, 429})
 # Consecutive blocks after which the whole run aborts.
 DEFAULT_BLOCK_LIMIT = 5
 
-# Shopee's own "shop does not exist" error codes.
-NOT_FOUND_ERRORS = frozenset({4, 5})
+# Shopee's own "shop does not exist" error codes. 1000000 is what an unused
+# shop id returns; verified live 2026-08 while sampling the id space. Without
+# it every dead id is filed as an error, and a genuine fault — a schema change,
+# a partial outage — is invisible in a run that expects thousands of misses.
+NOT_FOUND_ERRORS = frozenset({4, 5, 1_000_000})
 
 
 # Shopee's "this endpoint requires a logged-in session" code. Catalog endpoints

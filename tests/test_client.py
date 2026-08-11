@@ -81,6 +81,19 @@ def test_an_html_interstitial_counts_as_a_block_not_a_parse_bug() -> None:
     assert caught.value.status is FetchStatus.BLOCKED
 
 
+def test_an_unused_shop_id_is_not_found_rather_than_an_error() -> None:
+    """Sampling the id space produces thousands of these.
+
+    Filed as errors they would drown out a genuine fault, which is the only
+    signal that tells the operator to stop the run.
+    """
+    with _client(lambda _r: httpx.Response(200, json={"error": 1_000_000})) as client:
+        with pytest.raises(FetchFailure) as caught:
+            client.get_json("https://shopee.co.id/x")
+
+    assert caught.value.status is FetchStatus.NOT_FOUND
+
+
 def test_shopee_error_codes_map_to_a_status() -> None:
     with _client(lambda _r: httpx.Response(200, json={"error": 4})) as client:
         with pytest.raises(FetchFailure) as caught:
