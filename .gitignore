@@ -9,6 +9,9 @@ data/
 seeds.csv
 labels.csv
 
+# Third-party tooling — separate git repo, not our work
+ECC/
+
 # Python
 __pycache__/
 *.py[cod]
