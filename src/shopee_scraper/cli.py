@@ -5,12 +5,13 @@ from __future__ import annotations
 import csv
 import json
 import os
+import random
 from pathlib import Path
 from typing import Any
 
 import typer
 
-from . import endpoints, store
+from . import endpoints, sample, store
 from .client import RunAborted, ShopeeClient
 from .features import derive_features
 from .models import FetchFailure, FetchStatus, ItemRecord, ShopRecord, utc_now_iso
@@ -207,6 +208,82 @@ def _retry_via_browser(
         return record, items
     except (FetchFailure, RuntimeError):
         return None, []
+
+
+@app.command()
+def discover(
+    target: int = typer.Option(200, "--target", help="Active shops to collect."),
+    db: Path = typer.Option(Path("data/shops.db"), "--db", help="SQLite path."),
+    rate: float = typer.Option(0.0, "--rate", help="Requests/sec. 0 uses .env or 1.0."),
+    min_items: int = typer.Option(
+        sample.DEFAULT_MIN_ITEMS, "--min-items", help="Listings a shop must have."
+    ),
+    seed: int = typer.Option(None, "--seed", help="RNG seed, for a reproducible draw."),
+    max_candidates: int = typer.Option(
+        None, "--max-candidates", help="Stop after this many ids regardless."
+    ),
+) -> None:
+    """Find shops by sampling Shopee's id space at random.
+
+    Use this instead of a seeds file. A hand-written list is biased towards
+    whichever large brands came to mind, and a model trained on it learns to
+    recognise brands rather than fraud.
+
+    Most sampled ids are dormant accounts, so expect to spend roughly thirty
+    requests per shop kept. Safe to interrupt: every shop is committed as it
+    is found.
+    """
+    if target <= 0:
+        raise typer.BadParameter("--target must be positive")
+
+    effective_rate = rate or float(_setting("SHOPEE_RATE", "1.0"))
+    cookie = _setting("SHOPEE_COOKIE") or None
+    conn = store.connect(db)
+
+    _echo(
+        f"Sampling for {target} active shops (min {min_items} listings) "
+        f"at {effective_rate:g} req/s"
+        f"{' (with session cookie)' if cookie else ' (anonymous)'}"
+    )
+
+    found = 0
+
+    def report(shop_id: int, username: str | None, items: int) -> None:
+        nonlocal found
+        found += 1
+        _echo(f"[{found}/{target}] {username or shop_id}: {items} listings")
+
+    stats = sample.DiscoveryStats()
+    with ShopeeClient(rate=effective_rate, cookie=cookie) as client:
+        try:
+            stats = sample.discover(
+                client,
+                conn,
+                target=target,
+                rng=random.Random(seed),
+                min_items=min_items,
+                max_candidates=max_candidates,
+                on_shop=report,
+            )
+        except RunAborted as abort:
+            _echo(f"\nRun stopped: {abort}")
+        except KeyboardInterrupt:
+            _echo("\nInterrupted. Shops found so far are saved.")
+
+    conn.close()
+    rate_note = (
+        f"{stats.resolve_rate:.0%}" if stats.resolve_rate is not None else "n/a"
+    )
+    _echo(
+        f"\nDone. {stats.stored} stored from {stats.candidates} ids sampled "
+        f"({stats.resolved} real, {rate_note} resolve rate; "
+        f"{stats.inactive} had too few listings, {stats.errors} errored)."
+    )
+    if stats.stored < target:
+        _echo(
+            "Short of target — re-run to continue; already-stored shops are "
+            "never re-sampled."
+        )
 
 
 @app.command()
