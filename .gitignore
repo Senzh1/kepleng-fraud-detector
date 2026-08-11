@@ -1,0 +1,22 @@
+# Secrets — never commit session cookies
+.env
+
+# Collected data
+data/
+*.db
+*.db-journal
+*.jsonl
+seeds.csv
+labels.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/

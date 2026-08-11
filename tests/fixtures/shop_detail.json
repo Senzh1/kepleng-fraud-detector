@@ -1,0 +1,27 @@
+{
+  "error": null,
+  "error_msg": null,
+  "data": {
+    "shopid": 123456789,
+    "name": "Contoh Toko",
+    "ctime": 1600000000,
+    "item_count": 42,
+    "follower_count": 1500,
+    "rating_bad": 12,
+    "rating_normal": 8,
+    "rating_good": 380,
+    "response_rate": 92,
+    "response_time": 3600,
+    "is_official_shop": false,
+    "is_preferred_plus_seller": true,
+    "is_shopee_verified": true,
+    "cancellation_rate": 0.02,
+    "last_active_time": 1786320000,
+    "place": "Jakarta Barat",
+    "description": "Toko contoh untuk pengujian.",
+    "account": {
+      "username": "contoh_toko",
+      "rating_star": 4.7
+    }
+  }
+}

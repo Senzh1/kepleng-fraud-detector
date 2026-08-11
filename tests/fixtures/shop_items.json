@@ -1,0 +1,48 @@
+{
+  "error": null,
+  "total_count": 3,
+  "items": [
+    {
+      "item_basic": {
+        "itemid": 111,
+        "shopid": 123456789,
+        "name": "Produk A",
+        "price": 1500000000,
+        "stock": 10,
+        "historical_sold": 100,
+        "item_rating": {
+          "rating_star": 4.8,
+          "rating_count": [50, 1, 2, 3, 4, 40]
+        }
+      }
+    },
+    {
+      "item_basic": {
+        "itemid": 222,
+        "shopid": 123456789,
+        "name": "Produk B",
+        "price": 2500000000,
+        "stock": 0,
+        "historical_sold": 40,
+        "item_rating": {
+          "rating_star": 4.2,
+          "rating_count": [20, 2, 1, 2, 5, 10]
+        }
+      }
+    },
+    {
+      "item_basic": {
+        "itemid": 333,
+        "shopid": 123456789,
+        "name": "Produk C",
+        "price": 500000000,
+        "stock": 5,
+        "historical_sold": 10,
+        "item_rating": {
+          "rating_star": 5.0,
+          "rating_count": [5, 0, 0, 0, 0, 5]
+        }
+      }
+    }
+  ]
+}
