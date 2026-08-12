@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from . import risk, store
+from .client import RunAborted
 from .features import derive_features
 from .models import FetchFailure, ShopFeatures
 from .urls import SeedRef, resolve_seed
@@ -31,6 +32,16 @@ ELEVATED_RISK = 0.40
 
 class ShopUnavailable(Exception):
     """The shop could not be fetched live and is not in the local collection."""
+
+
+class UpstreamBlocked(Exception):
+    """Shopee refused us persistently and no stored snapshot could stand in.
+
+    Distinct from `ShopUnavailable` because the two are different answers to
+    the user: one means "we have nothing on this shop", the other means "come
+    back later". Collapsing them would report a temporary block as a permanent
+    absence.
+    """
 
 
 class ShopFetcher(Protocol):
@@ -180,6 +191,21 @@ class ShopScorer:
         if fetcher is not None:
             try:
                 fetched = fetcher.fetch_shop(ref)
+            except RunAborted as aborted:
+                # The client has stopped rather than grind against a wall. That
+                # is a known upstream condition, not a fault, so it must not
+                # escape as an unhandled 500 — least of all mid-recording.
+                snapshot = self.stored(ref)
+                if snapshot is None:
+                    raise UpstreamBlocked(str(aborted)) from aborted
+                return self._verdict(
+                    snapshot,
+                    source="stored",
+                    note=(
+                        "Shopee is refusing automated requests; scored the "
+                        "stored snapshot instead"
+                    ),
+                )
             except FetchFailure as failure:
                 snapshot = self.stored(ref)
                 if snapshot is None:

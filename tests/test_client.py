@@ -6,11 +6,14 @@ fast while still exercising the retry paths.
 
 from __future__ import annotations
 
+import threading
+import time
+
 import httpx
 import pytest
 from conftest import load_fixture
 
-from shopee_scraper.client import RunAborted, ShopeeClient
+from shopee_scraper.client import RateLimiter, RunAborted, ShopeeClient
 from shopee_scraper.models import FetchFailure, FetchStatus
 from shopee_scraper.urls import SeedRef
 
@@ -231,3 +234,24 @@ def test_cookies_are_sent_when_supplied() -> None:
         client.get_json("https://shopee.co.id/x")
 
     assert seen == ["SPC_F=abc; SPC_EC=def"]
+
+
+def test_the_rate_limiter_holds_under_concurrent_callers() -> None:
+    """Politeness has to survive two people using the app at once.
+
+    The API runs its endpoint in a threadpool over one shared client, so two
+    requests can enter `wait` together. Reading `_last` without exclusion lets
+    both conclude that nothing is owed, and the configured rate is quietly
+    exceeded — the one guarantee this collector makes to Shopee.
+    """
+    limiter = RateLimiter(20.0, jitter=0.0)  # one call per 50ms
+    started = time.monotonic()
+
+    threads = [threading.Thread(target=limiter.wait) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    # The first caller owes nothing; the other three each wait out an interval.
+    assert time.monotonic() - started >= 0.15

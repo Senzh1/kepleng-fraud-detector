@@ -9,6 +9,7 @@ response is to slow down or stop — not to disguise it.
 from __future__ import annotations
 
 import random
+import threading
 import time
 from typing import Any, NamedTuple
 
@@ -60,15 +61,21 @@ class RateLimiter:
         self.interval = 1.0 / rate_per_second if rate_per_second > 0 else 0.0
         self.jitter = jitter
         self._last: float = 0.0
+        self._lock = threading.Lock()
 
     def wait(self) -> None:
         if self.interval <= 0:
             return
-        elapsed = time.monotonic() - self._last
-        delay = self.interval - elapsed
-        if delay > 0:
-            time.sleep(delay + random.uniform(0, self.jitter * self.interval))
-        self._last = time.monotonic()
+        # Held across the sleep, so callers queue rather than race. The API
+        # serves requests from a threadpool over one shared client: unguarded,
+        # two of them read the same `_last`, both conclude nothing is owed, and
+        # the configured rate is exceeded without anything appearing to fail.
+        with self._lock:
+            elapsed = time.monotonic() - self._last
+            delay = self.interval - elapsed
+            if delay > 0:
+                time.sleep(delay + random.uniform(0, self.jitter * self.interval))
+            self._last = time.monotonic()
 
 
 class ShopeeClient:
