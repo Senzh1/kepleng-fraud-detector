@@ -16,9 +16,10 @@ from fastapi.testclient import TestClient
 from test_risk import make_shop
 
 from shopee_scraper import service
-from shopee_scraper.api import create_app
+from shopee_scraper.api import _live_fetcher, create_app
+from shopee_scraper.client import RunAborted
 from shopee_scraper.models import FetchFailure, FetchStatus, ShopRecord
-from shopee_scraper.service import ShopScorer, ShopUnavailable
+from shopee_scraper.service import ShopScorer, ShopUnavailable, UpstreamBlocked
 from shopee_scraper.urls import InvalidSeedError
 
 
@@ -44,6 +45,16 @@ class LiveFetcher:
 class BlockedFetcher:
     def fetch_shop(self, ref):
         raise FetchFailure(FetchStatus.BLOCKED, "HTTP 429")
+
+
+class AbortedFetcher:
+    """Shopee has blocked us often enough that the client gave up entirely."""
+
+    def fetch_shop(self, ref):
+        raise RunAborted("blocked 5 times in a row (HTTP 429); stopping.")
+
+    def close(self) -> None:
+        """Present because the app closes its fetcher during shutdown."""
 
 
 def population(size: int = 12) -> list:
@@ -135,6 +146,26 @@ class TestLiveFetch:
         with pytest.raises(ShopUnavailable):
             scorer.score_url("555555", fetcher=BlockedFetcher())
 
+    def test_falls_back_to_the_snapshot_when_the_client_gives_up(
+        self, scorer: ShopScorer
+    ) -> None:
+        """A persistent block is still answerable when we hold a snapshot."""
+        verdict = scorer.score_url("999", fetcher=AbortedFetcher())
+
+        assert verdict.source == "stored"
+        assert "refusing automated requests" in verdict.note
+
+    def test_a_persistent_block_is_reported_rather_than_raised_raw(
+        self, scorer: ShopScorer
+    ) -> None:
+        """`RunAborted` escaping the service would surface as an HTTP 500.
+
+        It is a known upstream condition, not a bug, and it must not reach the
+        user as a stack trace in the middle of a recorded demo.
+        """
+        with pytest.raises(UpstreamBlocked):
+            scorer.score_url("555555", fetcher=AbortedFetcher())
+
 
 class TestVerdictShape:
     def test_rounds_to_what_is_worth_showing(self, scorer: ShopScorer) -> None:
@@ -188,3 +219,37 @@ class TestApi:
         response = client.post("/api/score", json={"query": ""})
 
         assert response.status_code == 422
+
+    def test_a_persistent_block_is_a_service_error_not_a_crash(
+        self, scorer: ShopScorer
+    ) -> None:
+        app = create_app(scorer)
+        with TestClient(app) as client:
+            app.state.fetcher = AbortedFetcher()
+            response = client.post("/api/score", json={"query": "555555"})
+
+        assert response.status_code == 503
+
+
+class TestLiveFetcherConfiguration:
+    """What the app asks of the collector, which is less than the CLI does."""
+
+    def test_the_app_fetcher_skips_the_catalog(self, monkeypatch) -> None:
+        """No model feature and no rule reads a listing.
+
+        Every one of them reads the shop profile, so paging a catalog spends
+        seconds — and a session cookie — on data the score cannot use.
+        """
+        monkeypatch.setenv("SHOPEE_LIVE", "1")
+        fetcher = _live_fetcher()
+
+        assert fetcher is not None
+        try:
+            assert fetcher.max_items == 0
+        finally:
+            fetcher.close()
+
+    def test_live_fetching_stays_off_unless_asked_for(self, monkeypatch) -> None:
+        monkeypatch.delenv("SHOPEE_LIVE", raising=False)
+
+        assert _live_fetcher() is None

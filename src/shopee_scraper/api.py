@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .client import ShopeeClient
-from .service import ShopScorer, ShopUnavailable
+from .service import ShopScorer, ShopUnavailable, UpstreamBlocked
 from .urls import InvalidSeedError
 
 WEB_ROOT = Path(__file__).parent / "web"
@@ -46,6 +46,11 @@ def _live_fetcher() -> ShopeeClient | None:
     return ShopeeClient(
         rate=float(_setting("SHOPEE_RATE", "1.0")),
         cookie=_setting("SHOPEE_COOKIE") or None,
+        # No listing feeds the score: every model feature and every rule reads
+        # the shop profile, `item_count` included. Paging a catalog would spend
+        # seconds per request — and demand a session cookie — for data the
+        # verdict cannot use. The CLI still collects catalogs; the app does not.
+        max_items=0,
     )
 
 
@@ -110,6 +115,10 @@ def create_app(scorer: ShopScorer | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(error)) from error
         except ShopUnavailable as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        except UpstreamBlocked as error:
+            # 503, not 500: nothing here is broken, Shopee is refusing us and
+            # the honest answer is to say so and invite a retry.
+            raise HTTPException(status_code=503, detail=str(error)) from error
         return verdict.as_dict()
 
     return app
