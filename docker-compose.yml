@@ -1,0 +1,26 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      SHOPEE_DB: /app/data/shops.db
+      # Demo mode by default: score from the collected snapshot rather than
+      # calling Shopee. A reviewer gets a working app with no session cookie,
+      # no rate limiting, and no traffic they did not ask for. Set SHOPEE_LIVE=1
+      # (with SHOPEE_COOKIE) to score shops that have not been collected yet.
+      SHOPEE_LIVE: "0"
+    volumes:
+      # Read-only: the app scores, it never collects. Collection is the CLI's
+      # job and stays a deliberate, separate act.
+      - ./data:/app/data:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request;urllib.request.urlopen("http://localhost:8000/api/health")
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

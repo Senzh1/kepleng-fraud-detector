@@ -1,0 +1,16 @@
+# Keep the build context small and keep secrets out of it. `.env` holds a
+# Shopee session cookie and must never reach an image layer.
+.env
+.git
+.gitignore
+data
+docs
+tests
+*.csv
+*.db
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.coverage
+htmlcov
