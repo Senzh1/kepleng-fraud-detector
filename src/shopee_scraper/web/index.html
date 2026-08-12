@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shopee Seller Risk</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --card: #171a21;
+    --line: #262b36;
+    --text: #e7eaf0;
+    --muted: #8b93a7;
+    --accent: #ee4d2d;
+    --high: #f0503a;
+    --elevated: #e0a437;
+    --low: #3fae7a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1rem; min-height: 100vh;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  .sub { color: var(--muted); margin: 0 0 1.75rem; font-size: .9rem; }
+  form { display: flex; gap: .5rem; }
+  input {
+    flex: 1; padding: .8rem 1rem; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--card); color: var(--text);
+    font-size: 1rem;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button {
+    padding: .8rem 1.4rem; border: 0; border-radius: 8px;
+    background: var(--accent); color: #fff; font-size: 1rem; font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: .55; cursor: progress; }
+  .hint { color: var(--muted); font-size: .8rem; margin-top: .6rem; }
+  .card {
+    margin-top: 1.5rem; padding: 1.4rem; border-radius: 12px;
+    background: var(--card); border: 1px solid var(--line);
+  }
+  .band { font-size: 1.5rem; font-weight: 700; }
+  .band.high { color: var(--high); }
+  .band.elevated { color: var(--elevated); }
+  .band.low { color: var(--low); }
+  .score { color: var(--muted); font-size: .9rem; margin-top: .1rem; }
+  .bar { height: 7px; border-radius: 4px; background: #232833; margin: 1rem 0; }
+  .bar > span { display: block; height: 100%; border-radius: 4px; }
+  h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--muted); margin: 1.2rem 0 .5rem; }
+  ul { margin: 0; padding-left: 1.1rem; }
+  li { margin-bottom: .3rem; }
+  .meta { margin-top: 1.2rem; padding-top: 1rem; border-top: 1px solid var(--line);
+          color: var(--muted); font-size: .82rem; }
+  .error { border-color: var(--high); color: var(--high); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Shopee Seller Risk</h1>
+  <p class="sub">Paste a Shopee shop link to check the seller's fraud risk.</p>
+
+  <form id="form">
+    <input id="query" placeholder="https://shopee.co.id/shop/123456789" required
+           autocomplete="off" autofocus>
+    <button id="submit" type="submit">Check</button>
+  </form>
+  <p class="hint">Also accepts a product link, a username, or a numeric shop id.</p>
+
+  <div id="result"></div>
+</main>
+
+<script>
+const BAND_COLOR = {
+  high: "var(--high)", elevated: "var(--elevated)", low: "var(--low)",
+};
+const BAND_TEXT = {
+  high: "High risk", elevated: "Elevated risk", low: "Low risk",
+};
+
+const form = document.getElementById("form");
+const button = document.getElementById("submit");
+const result = document.getElementById("result");
+
+function escape(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function renderError(message) {
+  result.innerHTML = `<div class="card error">${escape(message)}</div>`;
+}
+
+function render(verdict) {
+  const pct = Math.round(verdict.risk_score * 100);
+  const reasons = verdict.reasons.map((r) => `<li>${escape(r)}</li>`).join("");
+  const note = verdict.note ? `<div>${escape(verdict.note)}</div>` : "";
+  result.innerHTML = `
+    <div class="card">
+      <div class="band ${escape(verdict.band)}">
+        ${escape(BAND_TEXT[verdict.band] ?? verdict.band)}
+      </div>
+      <div class="score">risk score ${verdict.risk_score.toFixed(3)} &middot;
+        more unusual than ${Math.round(verdict.anomaly_percentile * 100)}% of
+        ${verdict.population_size} collected shops</div>
+      <div class="bar">
+        <span style="width:${pct}%;background:${BAND_COLOR[verdict.band]}"></span>
+      </div>
+      <h2>Why</h2>
+      <ul>${reasons}</ul>
+      <div class="meta">
+        <div>${escape(verdict.name || verdict.username || "shop")} &middot;
+             id ${escape(verdict.shop_id)}</div>
+        <div>data source: ${escape(verdict.source)}</div>
+        ${note}
+      </div>
+    </div>`;
+}
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  button.disabled = true;
+  result.innerHTML = `<div class="card">Scoring&hellip;</div>`;
+  try {
+    const response = await fetch("/api/score", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: document.getElementById("query").value }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      renderError(payload.detail ?? "Could not score that shop.");
+    } else {
+      render(payload);
+    }
+  } catch (error) {
+    renderError("Could not reach the scoring service.");
+  } finally {
+    button.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
