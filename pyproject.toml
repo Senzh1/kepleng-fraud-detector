@@ -15,6 +15,8 @@ dependencies = [
 
 [project.optional-dependencies]
 browser = ["playwright>=1.44"]
+model = ["scikit-learn>=1.4"]
+app = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -25,6 +27,9 @@ shopee-scrape = "shopee_scraper.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+shopee_scraper = ["web/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
