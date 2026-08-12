@@ -1,0 +1,8 @@
+# The collected snapshot is shipped in the repo so a fresh clone can run the
+# app. Marked binary explicitly: git's text detection is reliable here, but a
+# wrong guess would line-ending-convert the SQLite file and hand judges a
+# corrupt database that fails only at startup, in their hands, not ours.
+*.db binary
+
+# Everything else normalises to LF in the repo, checked out per platform.
+* text=auto

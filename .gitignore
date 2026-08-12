@@ -2,12 +2,18 @@
 .env
 
 # Collected data
-data/
+data/*
 *.db
 *.db-journal
 *.jsonl
 seeds.csv
 labels.csv
+
+# ...except the collected snapshot the app is fitted on. Without it a fresh
+# clone has no population, the model cannot be fitted, and the app exits during
+# startup — so `docker compose up` would fail for anyone but us. Negation last:
+# the final matching pattern wins, and it has to beat both rules above.
+!data/shops.db
 
 # Third-party tooling — separate git repo, not our work
 ECC/
