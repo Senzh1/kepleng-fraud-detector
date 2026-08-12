@@ -69,7 +69,8 @@
            autocomplete="off" autofocus>
     <button id="submit" type="submit">Check</button>
   </form>
-  <p class="hint">Also accepts a product link, a username, or a numeric shop id.</p>
+  <p class="hint" id="hint">Also accepts a product link, a username, or a
+     numeric shop id.</p>
 
   <div id="result"></div>
 </main>
@@ -85,6 +86,26 @@ const BAND_TEXT = {
 const form = document.getElementById("form");
 const button = document.getElementById("submit");
 const result = document.getElementById("result");
+const hint = document.getElementById("hint");
+const BASE_HINT = "Also accepts a product link, a username, or a numeric shop id.";
+
+// How many shops the verdict is measured against. Held here so an uncollected
+// shop can be explained with a number rather than an apology.
+let collected = null;
+
+(async function describeCollection() {
+  // Reuses the health endpoint rather than adding one. Saying up front what the
+  // demo can score is what turns a dead end into an understandable answer.
+  try {
+    const health = await (await fetch("/api/health")).json();
+    collected = health.population_size;
+    hint.textContent = health.live_fetch
+      ? `${BASE_HINT} Live lookups are on, so any shop can be checked.`
+      : `${BASE_HINT} Demo mode: scores the ${collected} shops already collected.`;
+  } catch (error) {
+    // The hint is cosmetic. It must never be the reason the form fails.
+  }
+})();
 
 function escape(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => (
@@ -94,6 +115,20 @@ function escape(value) {
 
 function renderError(message) {
   result.innerHTML = `<div class="card error">${escape(message)}</div>`;
+}
+
+function renderNotCollected() {
+  // Not an error card: the app worked, it simply has nothing on this shop. A
+  // red failure box would tell a first-time user they had done something wrong.
+  const scope = collected ? `the ${collected} shops` : "the shops";
+  result.innerHTML = `
+    <div class="card">
+      <div class="band">Not collected yet</div>
+      <div class="score">This demo scores ${scope} already collected, so a
+        shop outside that sample cannot be ranked against it.</div>
+      <div class="meta">Set SHOPEE_LIVE=1 to fetch and score any Shopee shop
+        on demand.</div>
+    </div>`;
 }
 
 function render(verdict) {
@@ -133,7 +168,9 @@ form.addEventListener("submit", async (event) => {
       body: JSON.stringify({ query: document.getElementById("query").value }),
     });
     const payload = await response.json();
-    if (!response.ok) {
+    if (response.status === 404) {
+      renderNotCollected();
+    } else if (!response.ok) {
       renderError(payload.detail ?? "Could not score that shop.");
     } else {
       render(payload);
