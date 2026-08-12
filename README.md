@@ -1,9 +1,41 @@
 # Shopee Indonesia Store Scraper
 
-Collects store-level data from `shopee.co.id` into SQLite and exports a
-training-ready dataset for fraud-detection modelling. One row per shop.
+Scores Shopee Indonesia sellers for fraud risk. Paste a shop link, get a risk
+band and the reasons behind it.
 
-You supply the shops. This tool does not discover them.
+Two halves: a **collector** that builds the dataset by uniformly sampling
+Shopee's shop-id space, and an **unsupervised risk model** that ranks sellers
+without needing labelled fraud cases.
+
+## Quick start
+
+```bash
+docker compose up --build
+```
+
+Then open <http://localhost:8000> and paste a Shopee shop URL.
+
+The app runs in **demo mode** by default: it scores against the collected
+snapshot in `data/shops.db` rather than calling Shopee, so it works with no
+session cookie and generates no traffic. Set `SHOPEE_LIVE=1` (with
+`SHOPEE_COOKIE`) in `docker-compose.yml` to score shops that have not been
+collected yet; a live fetch that fails falls back to the stored snapshot and
+says so in the verdict.
+
+Without Docker:
+
+```powershell
+python -m pip install -e ".[model,app]"
+uvicorn shopee_scraper.api:app --reload
+```
+
+| Layer | Where | Responsibility |
+|---|---|---|
+| AI | `risk.py`, `features.py` | Feature matrix, fraud rules, anomaly blend. Pure functions |
+| Backend | `api.py`, `service.py` | One synchronous endpoint, `POST /api/score` |
+| Frontend | `web/index.html` | One input, one verdict |
+
+The collector below builds the dataset the model is fitted on.
 
 ## Before you use this
 
@@ -96,6 +128,47 @@ shopee-scrape export --db data/shops.db --out dataset.jsonl
 shopee-scrape export --db data/shops.db --out dataset.csv --format csv --labeled-only
 ```
 
+### 6. Rank shops for review
+
+Needs the modelling extra: `python -m pip install -e ".[model]"`.
+
+```powershell
+shopee-scrape score --db data/shops.db --out risk_queue.csv
+```
+
+Ranks every collected shop most-suspicious-first, blending an Isolation Forest
+anomaly score with explicit fraud rules. **Unsupervised on purpose** — it needs
+no labels, which is what makes it usable before any labelling has happened.
+
+The blend matters. An outlier is not a fraudster: the largest and newest shops
+are unusual and mostly legitimate, so a pure anomaly ranking surfaces oddity
+rather than risk. `--weight` sets the anomaly share (default `0.5`); the rest is
+the rule score.
+
+Output includes per-rule fire rates. A rule firing on 0% or ~100% of shops is
+carrying no information on your population, and its threshold wants revisiting.
+
+To measure the ranking, label a sample spread across the whole score range:
+
+```powershell
+shopee-scrape review-queue --db data/shops.db --out review_queue.csv --size 100
+```
+
+```csv
+shop_id,label,source,shop_url,rank,risk_score,rules_fired
+121814757,,manual_review,https://shopee.co.id/shop/121814757,3,0.7447,negative_reputation;dormant_with_stock
+```
+
+Open each `shop_url`, put 1 or 0 in the blank `label` column, then feed the same
+file straight back to `label-import`. Re-running `score` afterwards reports
+precision@k — the share of *labelled* shops in the top k that are genuinely
+fraud. Unlabelled shops are skipped rather than counted as negatives, since
+with most of the queue unreviewed that would report near-zero precision no
+matter how good the ranking is.
+
+Sampling the top of the queue alone would measure precision there and tell you
+nothing about what the ranking missed, which is why `review-queue` spreads.
+
 ## Session cookies — required for listings
 
 **Verified against production 2026-08:**
@@ -183,6 +256,7 @@ seeds.csv ──> urls.resolve ──> client.fetch ──> store.upsert ──>
 | `store.py` | SQLite schema, upserts, resume state |
 | `models.py` | Typed records |
 | `features.py` | Raw JSON to feature row |
+| `risk.py` | Feature matrix, fraud rules, anomaly blend, review queue |
 | `cli.py` | Commands |
 
 Raw API responses are kept in SQLite alongside the derived data. Feature
