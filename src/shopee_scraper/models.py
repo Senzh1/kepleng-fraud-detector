@@ -26,6 +26,18 @@ class FetchStatus(str, Enum):
     ERROR = "error"
 
 
+class SampleOutcome(str, Enum):
+    """Why a randomly sampled id was not kept.
+
+    Both outcomes are permanent facts about the id, which is what makes them
+    safe to cache and skip forever. Transient failures are deliberately absent:
+    an id that errored was never judged, so it stays eligible for a retry.
+    """
+
+    NOT_FOUND = "not_found"
+    INACTIVE = "inactive"
+
+
 class FetchFailure(Exception):
     """A fetch that failed in a way worth recording rather than crashing on."""
 

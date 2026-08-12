@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from shopee_scraper import store
-from shopee_scraper.models import FetchStatus, ItemRecord, ShopRecord
+from shopee_scraper.models import FetchStatus, ItemRecord, SampleOutcome, ShopRecord
 
 
 @pytest.fixture
@@ -165,3 +165,111 @@ def test_iter_shops_round_trips_records_and_items(conn: sqlite3.Connection) -> N
 def test_shop_labels_reports_unlabeled_shops_as_none(conn: sqlite3.Connection) -> None:
     store.upsert_shop(conn, _record())
     assert store.shop_labels(conn) == {123456789: (None, None)}
+
+
+# --- rejected sample ids --------------------------------------------------
+
+
+def test_a_rejected_id_is_remembered_for_later_runs(conn: sqlite3.Connection) -> None:
+    store.record_sampled(conn, 11, SampleOutcome.NOT_FOUND)
+    assert store.skippable_ids(conn, min_items=1) == {11}
+
+
+def test_rejected_ids_stay_out_of_the_retry_list(conn: sqlite3.Connection) -> None:
+    """The whole point of a separate table: dead ids must not look retryable."""
+    store.record_sampled(conn, 11, SampleOutcome.NOT_FOUND)
+    store.record_sampled(conn, 12, SampleOutcome.INACTIVE, 0)
+
+    assert store.failures(conn) == []
+    assert store.status_counts(conn) == {}
+
+
+def test_recording_an_id_twice_keeps_one_row(conn: sqlite3.Connection) -> None:
+    store.record_sampled(conn, 11, SampleOutcome.INACTIVE, 0)
+    store.record_sampled(conn, 11, SampleOutcome.INACTIVE, 3)
+
+    assert store.sampled_counts(conn) == {"inactive": 1}
+    row = conn.execute("SELECT item_count FROM sampled_ids").fetchone()
+    assert row["item_count"] == 3
+
+
+def test_a_dormant_shop_returns_once_the_bar_is_lowered(
+    conn: sqlite3.Connection,
+) -> None:
+    """Caching a verdict must not outlive the threshold that produced it."""
+    store.record_sampled(conn, 11, SampleOutcome.INACTIVE, 4)
+
+    assert store.skippable_ids(conn, min_items=10) == {11}
+    assert store.skippable_ids(conn, min_items=4) == set()
+
+
+def test_a_shop_with_no_reported_count_is_always_skipped(
+    conn: sqlite3.Connection,
+) -> None:
+    """"Did not say" never satisfies a minimum, at any threshold."""
+    store.record_sampled(conn, 11, SampleOutcome.INACTIVE, None)
+    assert store.skippable_ids(conn, min_items=1) == {11}
+
+
+def test_a_dead_id_is_dead_at_every_threshold(conn: sqlite3.Connection) -> None:
+    store.record_sampled(conn, 11, SampleOutcome.NOT_FOUND)
+    assert store.skippable_ids(conn, min_items=0) == {11}
+
+
+def test_rejected_ids_are_counted_by_reason(conn: sqlite3.Connection) -> None:
+    store.record_sampled(conn, 11, SampleOutcome.NOT_FOUND)
+    store.record_sampled(conn, 12, SampleOutcome.NOT_FOUND)
+    store.record_sampled(conn, 13, SampleOutcome.INACTIVE, 0)
+
+    assert store.sampled_counts(conn) == {"not_found": 2, "inactive": 1}
+
+
+# --- discovery runs -------------------------------------------------------
+
+
+def test_a_run_is_recorded_from_the_moment_it_starts(conn: sqlite3.Connection) -> None:
+    run_id = store.start_run(conn, target=5, min_items=1)
+
+    run = store.latest_run(conn)
+    assert run is not None
+    assert run["run_id"] == run_id
+    assert run["target"] == 5
+    assert run["finished_at"] is None
+
+
+def test_finishing_a_run_records_what_it_cost(conn: sqlite3.Connection) -> None:
+    run_id = store.start_run(conn, target=5, min_items=1)
+    store.finish_run(
+        conn, run_id, candidates=100, resolved=10, stored=3, inactive=7, errors=1
+    )
+
+    run = store.latest_run(conn)
+    assert run is not None
+    assert (run["candidates"], run["stored"], run["errors"]) == (100, 3, 1)
+    assert run["finished_at"] is not None
+
+
+def test_no_runs_yet_is_none_not_an_error(conn: sqlite3.Connection) -> None:
+    assert store.latest_run(conn) is None
+    assert store.run_totals(conn) == {
+        "runs": 0,
+        "candidates": 0,
+        "resolved": 0,
+        "stored": 0,
+        "inactive": 0,
+        "errors": 0,
+    }
+
+
+def test_totals_sum_the_effort_across_runs(conn: sqlite3.Connection) -> None:
+    """The measured cost per shop has to survive the operator restarting."""
+    for stored in (2, 3):
+        run_id = store.start_run(conn, target=5, min_items=1)
+        store.finish_run(
+            conn, run_id, candidates=50, resolved=5, stored=stored, inactive=2, errors=0
+        )
+
+    totals = store.run_totals(conn)
+    assert totals["runs"] == 2
+    assert totals["candidates"] == 100
+    assert totals["stored"] == 5

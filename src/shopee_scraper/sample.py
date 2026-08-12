@@ -10,9 +10,11 @@ whatever shops the operator happened to think of — in practice large, verified
 brands — and a model trained on it learns to recognise brands rather than
 fraud. Uniform sampling has no such preference.
 
-Measured against production 2026-08: roughly 10% of sampled ids resolve to a
-shop, and most of those are dormant buyer accounts with no listings, hence the
-activity filter.
+Most sampled ids are dormant buyer accounts with no listings, hence the activity
+filter. For what the sampling actually costs — resolve rate, ids per shop kept —
+read the `discovery_runs` table via the `status` command. Every run records its
+own totals there, so the number an operator plans against is measured rather
+than a docstring estimate nobody re-checked.
 """
 
 from __future__ import annotations
@@ -23,8 +25,22 @@ from typing import Any, Callable, Iterator, Sequence
 
 from . import endpoints
 from .client import ShopeeClient
-from .models import FetchFailure, FetchStatus, ShopRecord, utc_now_iso
-from .store import record_status, seed_key, upsert_shop
+from .models import (
+    FetchFailure,
+    FetchStatus,
+    SampleOutcome,
+    ShopRecord,
+    utc_now_iso,
+)
+from .store import (
+    finish_run,
+    record_sampled,
+    record_status,
+    seed_key,
+    skippable_ids,
+    start_run,
+    upsert_shop,
+)
 
 # Id ranges bracketed by shops verified to exist: 52_635_036 through
 # 555_954_448. Sampling in bands rather than one flat range keeps the draw from
@@ -131,59 +147,86 @@ def discover(
     Each hit is written from the response that found it — discovery and
     collection are the same request, not two. Misses are not written to
     `fetch_log`: thousands of dead random ids would swamp the operator's retry
-    list with entries that were never worth retrying.
+    list with entries that were never worth retrying. They go to `sampled_ids`
+    instead, which keeps the retry list clean *and* stops a later run paying
+    for the same verdict twice.
+
+    Errors are the deliberate exception: an id that failed transiently was
+    never actually judged, so it is left eligible for a retry.
 
     `RunAborted` from the client propagates untouched. Whatever has been stored
-    stays stored, because each shop is committed as it is found.
+    stays stored, because each shop is committed as it is found, and the run's
+    totals are written even when it is interrupted.
     """
     if target <= 0:
         raise ValueError("target must be positive")
 
     rng = rng or random.Random()
     limit = max_candidates or target * DEFAULT_ATTEMPT_MULTIPLIER
-    existing = {
+    collected = {
         int(row["shop_id"])
         for row in conn.execute("SELECT shop_id FROM shops").fetchall()
     }
+    seen = collected | skippable_ids(conn, min_items)
 
+    run_id = start_run(conn, target, min_items)
     candidates = resolved = stored = inactive = errors = 0
 
-    for shop_id in iter_candidate_ids(rng, bands, seen=existing):
-        if stored >= target or candidates >= limit:
-            break
-        candidates += 1
+    try:
+        for shop_id in iter_candidate_ids(rng, bands, seen=seen):
+            if stored >= target or candidates >= limit:
+                break
+            candidates += 1
 
-        try:
-            payload = client.get_json(endpoints.shop_detail_url(shop_id))
-        except FetchFailure as failure:
-            # A random id pointing at nothing is the expected case, not an error.
-            if failure.status is not FetchStatus.NOT_FOUND:
-                errors += 1
-            continue
+            try:
+                payload = client.get_json(endpoints.shop_detail_url(shop_id))
+            except FetchFailure as failure:
+                # A random id pointing at nothing is expected, not an error.
+                if failure.status is FetchStatus.NOT_FOUND:
+                    record_sampled(conn, shop_id, SampleOutcome.NOT_FOUND)
+                else:
+                    errors += 1
+                continue
 
-        resolved += 1
-        items = shop_activity(payload)
-        if items is None or items < min_items:
-            inactive += 1
-            continue
+            resolved += 1
+            items = shop_activity(payload)
+            if items is None or items < min_items:
+                inactive += 1
+                record_sampled(conn, shop_id, SampleOutcome.INACTIVE, items)
+                continue
 
-        username = endpoints.first_present(
-            payload, endpoints.SHOP_FIELD_PATHS["username"]
-        )
-        upsert_shop(
+            username = endpoints.first_present(
+                payload, endpoints.SHOP_FIELD_PATHS["username"]
+            )
+            upsert_shop(
+                conn,
+                ShopRecord(
+                    shop_id=shop_id,
+                    username=username,
+                    raw_base=None,
+                    raw_detail=payload,
+                    fetched_at=utc_now_iso(),
+                ),
+            )
+            record_status(
+                conn, seed_key(shop_id, None), FetchStatus.OK, shop_id=shop_id
+            )
+            stored += 1
+            if on_shop is not None:
+                on_shop(shop_id, username, items)
+    finally:
+        # In `finally` so an interrupted run still reports what it cost. The
+        # alternative loses the sample counts of every run the operator stops
+        # by hand, which is most of them.
+        finish_run(
             conn,
-            ShopRecord(
-                shop_id=shop_id,
-                username=username,
-                raw_base=None,
-                raw_detail=payload,
-                fetched_at=utc_now_iso(),
-            ),
+            run_id,
+            candidates=candidates,
+            resolved=resolved,
+            stored=stored,
+            inactive=inactive,
+            errors=errors,
         )
-        record_status(conn, seed_key(shop_id, None), FetchStatus.OK, shop_id=shop_id)
-        stored += 1
-        if on_shop is not None:
-            on_shop(shop_id, username, items)
 
     return DiscoveryStats(
         candidates=candidates,

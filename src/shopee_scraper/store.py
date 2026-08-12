@@ -13,7 +13,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from .models import FetchStatus, ItemRecord, ShopRecord, utc_now_iso
+from .models import FetchStatus, ItemRecord, SampleOutcome, ShopRecord, utc_now_iso
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS shops (
@@ -43,6 +43,35 @@ CREATE TABLE IF NOT EXISTS fetch_log (
     detail     TEXT,
     attempts   INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
+);
+
+-- Ids that random discovery tested and rejected. Deliberately NOT fetch_log:
+-- these number in the tens of thousands and none is worth retrying, so mixing
+-- them into the operator's retry list would bury every real failure.
+-- `item_count` is kept so the skip stays honest under a changed --min-items:
+-- a shop rejected at min 10 must be reconsidered, not silently skipped, when
+-- a later run asks for min 1. NULL means Shopee reported no count at all.
+CREATE TABLE IF NOT EXISTS sampled_ids (
+    shop_id    INTEGER PRIMARY KEY,
+    outcome    TEXT NOT NULL,
+    item_count INTEGER,
+    sampled_at TEXT NOT NULL
+);
+
+-- One row per discovery run. Without it the sampling rates exist only in
+-- terminal scrollback, leaving no way to check the cost-per-shop estimates
+-- that sizing the collection depends on.
+CREATE TABLE IF NOT EXISTS discovery_runs (
+    run_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    target      INTEGER NOT NULL,
+    min_items   INTEGER NOT NULL,
+    candidates  INTEGER NOT NULL DEFAULT 0,
+    resolved    INTEGER NOT NULL DEFAULT 0,
+    stored      INTEGER NOT NULL DEFAULT 0,
+    inactive    INTEGER NOT NULL DEFAULT 0,
+    errors      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_items_shop ON shop_items (shop_id);
@@ -169,6 +198,124 @@ def failures(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
         (FetchStatus.OK.value, limit),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def record_sampled(
+    conn: sqlite3.Connection,
+    shop_id: int,
+    outcome: SampleOutcome,
+    item_count: int | None = None,
+) -> None:
+    """Remember that discovery tested `shop_id` and rejected it.
+
+    The latest verdict wins, so a re-test under a lower threshold refreshes the
+    count rather than leaving a stale one behind.
+    """
+    conn.execute(
+        """
+        INSERT INTO sampled_ids (shop_id, outcome, item_count, sampled_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(shop_id) DO UPDATE SET
+            outcome    = excluded.outcome,
+            item_count = excluded.item_count,
+            sampled_at = excluded.sampled_at
+        """,
+        (shop_id, outcome.value, item_count, utc_now_iso()),
+    )
+    conn.commit()
+
+
+def skippable_ids(conn: sqlite3.Connection, min_items: int) -> set[int]:
+    """Rejected ids that `min_items` cannot rescue, so are safe to never re-request.
+
+    A dead id is dead at any threshold. A live but quiet shop is only skipped
+    while it is still below the bar being asked for now; lowering the bar puts
+    it back in play.
+    """
+    rows = conn.execute(
+        """
+        SELECT shop_id FROM sampled_ids
+        WHERE outcome = ? OR item_count IS NULL OR item_count < ?
+        """,
+        (SampleOutcome.NOT_FOUND.value, min_items),
+    ).fetchall()
+    return {int(row["shop_id"]) for row in rows}
+
+
+def sampled_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    """Rejected ids broken down by why they were rejected."""
+    rows = conn.execute(
+        "SELECT outcome, COUNT(*) AS n FROM sampled_ids GROUP BY outcome"
+    ).fetchall()
+    return {row["outcome"]: row["n"] for row in rows}
+
+
+def start_run(conn: sqlite3.Connection, target: int, min_items: int) -> int:
+    """Open a discovery run row and return its id.
+
+    Written before sampling begins so that a run killed mid-flight still leaves
+    a record of having happened.
+    """
+    cursor = conn.execute(
+        """
+        INSERT INTO discovery_runs (started_at, target, min_items)
+        VALUES (?, ?, ?)
+        """,
+        (utc_now_iso(), target, min_items),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def finish_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    *,
+    candidates: int,
+    resolved: int,
+    stored: int,
+    inactive: int,
+    errors: int,
+) -> None:
+    """Close a discovery run with what it actually did."""
+    conn.execute(
+        """
+        UPDATE discovery_runs
+        SET finished_at = ?, candidates = ?, resolved = ?,
+            stored = ?, inactive = ?, errors = ?
+        WHERE run_id = ?
+        """,
+        (utc_now_iso(), candidates, resolved, stored, inactive, errors, run_id),
+    )
+    conn.commit()
+
+
+def latest_run(conn: sqlite3.Connection) -> dict[str, Any] | None:
+    """The most recently started discovery run, or None if there has been none."""
+    row = conn.execute(
+        "SELECT * FROM discovery_runs ORDER BY run_id DESC LIMIT 1"
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def run_totals(conn: sqlite3.Connection) -> dict[str, int]:
+    """Sampling effort summed across every discovery run.
+
+    This is the measured cost of collection. Prefer it over any figure written
+    into a docstring, which can only ever be a guess that ages badly.
+    """
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS runs,
+               COALESCE(SUM(candidates), 0) AS candidates,
+               COALESCE(SUM(resolved), 0)   AS resolved,
+               COALESCE(SUM(stored), 0)     AS stored,
+               COALESCE(SUM(inactive), 0)   AS inactive,
+               COALESCE(SUM(errors), 0)     AS errors
+        FROM discovery_runs
+        """
+    ).fetchone()
+    return {key: int(row[key]) for key in row.keys()}
 
 
 def import_labels(

@@ -257,3 +257,113 @@ def test_the_same_seed_draws_the_same_shops(conn, tmp_path) -> None:
 def test_a_nonpositive_target_is_rejected(conn) -> None:
     with pytest.raises(ValueError):
         sample.discover(FakeClient({}), conn, target=0)
+
+
+# --- not paying twice for the same verdict --------------------------------
+
+
+class InterruptingClient:
+    """Stops mid-run the way an operator pressing Ctrl-C does."""
+
+    def __init__(self, shops: dict[int, dict], stop_after: int) -> None:
+        self.inner = FakeClient(shops)
+        self.stop_after = stop_after
+
+    @property
+    def asked(self) -> list[int]:
+        return self.inner.asked
+
+    def get_json(self, url: str) -> dict:
+        if len(self.inner.asked) >= self.stop_after:
+            raise KeyboardInterrupt
+        return self.inner.get_json(url)
+
+
+def test_a_dead_id_is_remembered_rather_than_re_requested(conn) -> None:
+    """The restart cost the operator noticed: dead ids re-tested every run."""
+    client = FakeClient({12: _shop(12, "aktif", 5)})
+    sample.discover(
+        client, conn, target=99, rng=random.Random(0), bands=((10, 13),),
+        max_candidates=4,
+    )
+    assert sorted(client.asked) == [10, 11, 12, 13]
+
+    second = FakeClient({12: _shop(12, "aktif", 5)})
+    sample.discover(
+        second, conn, target=99, rng=random.Random(0), bands=((10, 13),),
+        max_candidates=4,
+    )
+
+    assert second.asked == []
+
+
+def test_a_dormant_shop_is_remembered_with_the_count_that_rejected_it(conn) -> None:
+    client = FakeClient({10: _shop(10, "kosong", 0), 11: _shop(11, "aktif", 5)})
+    sample.discover(
+        client, conn, target=99, rng=random.Random(0), bands=((10, 11),),
+        max_candidates=2,
+    )
+
+    row = conn.execute(
+        "SELECT outcome, item_count FROM sampled_ids WHERE shop_id = 10"
+    ).fetchone()
+    assert row["outcome"] == "inactive"
+    assert row["item_count"] == 0
+
+
+def test_an_errored_id_stays_eligible_for_a_retry(conn) -> None:
+    """An id that failed transiently was never judged, so it is not cached."""
+    client = FakeClient({10: FetchFailure(FetchStatus.ERROR, "unexpected JSON")})
+    sample.discover(
+        client, conn, target=99, rng=random.Random(0), bands=((10, 10),),
+        max_candidates=1,
+    )
+
+    assert store.skippable_ids(conn, min_items=1) == set()
+
+
+def test_remembering_rejects_does_not_pollute_the_retry_list(conn) -> None:
+    client = FakeClient({12: _shop(12, "aktif", 5)})
+    sample.discover(
+        client, conn, target=99, rng=random.Random(0), bands=((10, 13),),
+        max_candidates=4,
+    )
+
+    assert store.failures(conn) == []
+    assert store.status_counts(conn) == {"ok": 1}
+
+
+# --- runs are measurable --------------------------------------------------
+
+
+def test_a_run_records_what_the_sampling_cost(conn) -> None:
+    client = FakeClient({10: _shop(10, "aktif", 5), 11: _shop(11, "kosong", 0)})
+    sample.discover(
+        client, conn, target=99, rng=random.Random(0), bands=((10, 13),),
+        max_candidates=4,
+    )
+
+    run = store.latest_run(conn)
+    assert run is not None
+    assert (run["candidates"], run["resolved"], run["stored"], run["inactive"]) == (
+        4,
+        2,
+        1,
+        1,
+    )
+
+
+def test_an_interrupted_run_still_records_what_it_cost(conn) -> None:
+    """Most runs end by hand; losing their numbers loses the measured rate."""
+    shops = {n: _shop(n, f"toko{n}", 5) for n in range(100, 200)}
+    client = InterruptingClient(shops, stop_after=3)
+
+    with pytest.raises(KeyboardInterrupt):
+        sample.discover(
+            client, conn, target=50, rng=random.Random(0), bands=((100, 199),)
+        )
+
+    run = store.latest_run(conn)
+    assert run is not None
+    assert run["stored"] == 3
+    assert run["finished_at"] is not None
