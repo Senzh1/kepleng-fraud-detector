@@ -111,21 +111,29 @@ def load_features(
     return rows
 
 
-def band_for(score: float, rule_score: float | None = None) -> str:
+def band_for(
+    score: float,
+    rule_score: float | None = None,
+    is_official_shop: bool | None = None,
+) -> str:
     """Turn a score into the word a non-technical user can act on.
 
-    A `rule_score` of exactly 0.0 means every rule that could be evaluated
-    found nothing, and the score is carried entirely by how unusual the shop
-    is. Unusual is not the same as risky — the largest and most established
-    sellers are the most unusual things in a uniformly sampled population, and
-    they were the ones being banded `elevated` on that alone. Such a shop is
-    reported `low`; its `anomaly_percentile` still travels in the verdict, so
-    the oddity stays visible without being dressed up as an accusation.
+    An official shop with a `rule_score` of exactly 0.0 is reported `low`
+    whatever its anomaly. Uniform id sampling makes the corpus overwhelmingly
+    small dormant shops, so a brand storefront sits at the top of the anomaly
+    distribution for being large rather than for being risky, and banding it
+    `elevated` accuses the safest sellers on the platform of nothing.
 
-    `None` is deliberately not treated the same way: it means no rule could be
-    evaluated at all, so there is no absence of evidence to lean on.
+    Both halves of that condition are load-bearing. Keying on a clean rule
+    score alone silenced `is_shopee_verified` shops too — a far weaker badge
+    that ordinary sellers hold — which pulled genuinely unusual sellers out of
+    the review queue. Only the official badge is strong enough to override a
+    94th-percentile anomaly.
+
+    A `rule_score` of None is not treated as clean: no rule evaluated is not
+    the same as no rule fired, so there is no absence of evidence to lean on.
     """
-    if rule_score == 0.0:
+    if rule_score == 0.0 and is_official_shop:
         return "low"
     if score >= HIGH_RISK:
         return "high"
@@ -252,7 +260,9 @@ class ShopScorer:
             username=scored.username,
             name=scored.name,
             risk_score=scored.risk_score,
-            band=band_for(scored.risk_score, scored.rule_score),
+            band=band_for(
+                scored.risk_score, scored.rule_score, features.is_official_shop
+            ),
             anomaly_percentile=scored.anomaly_percentile,
             rule_score=scored.rule_score,
             reasons=explain(scored, self.population_size),
