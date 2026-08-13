@@ -111,8 +111,22 @@ def load_features(
     return rows
 
 
-def band_for(score: float) -> str:
-    """Turn a score into the word a non-technical user can act on."""
+def band_for(score: float, rule_score: float | None = None) -> str:
+    """Turn a score into the word a non-technical user can act on.
+
+    A `rule_score` of exactly 0.0 means every rule that could be evaluated
+    found nothing, and the score is carried entirely by how unusual the shop
+    is. Unusual is not the same as risky — the largest and most established
+    sellers are the most unusual things in a uniformly sampled population, and
+    they were the ones being banded `elevated` on that alone. Such a shop is
+    reported `low`; its `anomaly_percentile` still travels in the verdict, so
+    the oddity stays visible without being dressed up as an accusation.
+
+    `None` is deliberately not treated the same way: it means no rule could be
+    evaluated at all, so there is no absence of evidence to lean on.
+    """
+    if rule_score == 0.0:
+        return "low"
     if score >= HIGH_RISK:
         return "high"
     if score >= ELEVATED_RISK:
@@ -238,7 +252,7 @@ class ShopScorer:
             username=scored.username,
             name=scored.name,
             risk_score=scored.risk_score,
-            band=band_for(scored.risk_score),
+            band=band_for(scored.risk_score, scored.rule_score),
             anomaly_percentile=scored.anomaly_percentile,
             rule_score=scored.rule_score,
             reasons=explain(scored, self.population_size),

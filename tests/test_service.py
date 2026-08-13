@@ -93,6 +93,20 @@ class TestBands:
     def test_low_score_reads_as_low(self) -> None:
         assert service.band_for(0.1) == "low"
 
+    def test_a_shop_with_no_rule_faults_is_low_however_unusual(self) -> None:
+        """Unusual is not risky.
+
+        Uniform id sampling makes the reference population overwhelmingly tiny
+        shops, so a large established seller sits at the far end of the anomaly
+        distribution with a spotless rule record. Banding that `elevated`
+        accuses the safest sellers on the platform of nothing but being big.
+        """
+        assert service.band_for(0.499, rule_score=0.0) == "low"
+
+    def test_an_unevaluable_rule_score_still_bands_on_anomaly(self) -> None:
+        """No rule evaluated is not the same as no rule fired."""
+        assert service.band_for(0.499, rule_score=None) == "elevated"
+
 
 class TestScoring:
     def test_scores_a_stored_shop_by_id(self, scorer: ShopScorer) -> None:
