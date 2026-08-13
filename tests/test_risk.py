@@ -21,7 +21,10 @@ def make_shop(shop_id: int = 1, **overrides) -> ShopFeatures:
         rating_star=4.8,
         rating_count_total=400,
         bad_rating_ratio=0.02,
-        response_rate=0.9,
+        # Percent, matching what Shopee reports and what the fixtures carry.
+        # Written as 0.9 this read as a 0.9% responder, which is why the
+        # threshold drifted to a fraction without any test objecting.
+        response_rate=90.0,
         response_time_seconds=1800.0,
         follower_count=1200,
         item_count=60,
@@ -155,11 +158,25 @@ class TestRules:
             item_count=800,
             rating_count_total=0,
             bad_rating_ratio=None,
-            response_rate=0.05,
+            response_rate=5.0,
             is_shopee_verified=False,
         )
 
         assert risk.rule_score(suspicious) > risk.rule_score(make_shop())
+
+    def test_unresponsive_seller_reads_response_rate_as_a_percentage(self) -> None:
+        """The threshold is 30%, not 0.3%.
+
+        Shopee reports `response_rate` on a 0-100 scale. Compared against a
+        fractional threshold the rule fired only on a literal zero, so sellers
+        answering a quarter of their buyers passed as responsive — the rule
+        looked alive in the fire-rate report while missing everyone it exists
+        to catch.
+        """
+        quarter = make_shop(response_rate=25.0)
+
+        assert "unresponsive_seller" in risk.rules_fired(quarter)
+        assert "unresponsive_seller" not in risk.rules_fired(make_shop())
 
 
 class TestBlend:

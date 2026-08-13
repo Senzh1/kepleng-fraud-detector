@@ -92,7 +92,11 @@ LARGE_CATALOG_ITEMS = 100
 UNRATED_CATALOG_ITEMS = 20
 NEGATIVE_RATING_SHARE = 0.20
 MIN_RATINGS_TO_JUDGE = 10
-LOW_RESPONSE_RATE = 0.30
+# Percent, not a fraction: Shopee reports `response_rate` on a 0-100 scale
+# (observed across 500 collected shops: min 0, median 89, max 100, always whole
+# numbers). Written as 0.30 this rule fired only on a literal zero, passing
+# sellers who answer 20-25% of buyers as responsive.
+LOW_RESPONSE_RATE = 30.0
 DORMANT_DAYS = 30.0
 
 # Half anomaly, half rules. Neither signal is trustworthy alone: the detector
