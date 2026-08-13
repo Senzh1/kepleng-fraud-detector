@@ -219,7 +219,7 @@ class ShopScorer:
                     ),
                 )
             features = derive_features(fetched.record, fetched.items)
-            return self._verdict(features, source="live", note=fetched.note)
+            return self._verdict(features, source="live", note=fetched.item_note)
 
         snapshot = self.stored(ref)
         if snapshot is None:

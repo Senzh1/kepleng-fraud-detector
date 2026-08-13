@@ -17,29 +17,35 @@ from test_risk import make_shop
 
 from shopee_scraper import service
 from shopee_scraper.api import _live_fetcher, create_app
-from shopee_scraper.client import RunAborted
+from shopee_scraper.client import RunAborted, ShopFetch
 from shopee_scraper.models import FetchFailure, FetchStatus, ShopRecord
 from shopee_scraper.service import ShopScorer, ShopUnavailable, UpstreamBlocked
 from shopee_scraper.urls import InvalidSeedError
 
 
-class Fetched:
-    """Stands in for client.ShopFetch."""
+def fetched(shop_id: int) -> ShopFetch:
+    """A real `ShopFetch`, not a look-alike.
 
-    def __init__(self, shop_id: int) -> None:
-        self.record = ShopRecord(
+    An ad-hoc stand-in class was what let the service read a field the client
+    does not have: the fake carried `note`, the real tuple carries `item_note`,
+    and every live-fetch test passed while the live path raised on every
+    successful fetch. Constructing the genuine type keeps the two in step.
+    """
+    return ShopFetch(
+        record=ShopRecord(
             shop_id=shop_id,
             username="live_shop",
             raw_detail=load_fixture("shop_detail.json"),
             fetched_at="2026-08-11T04:22:31Z",
-        )
-        self.items: list = []
-        self.note = None
+        ),
+        items=[],
+        item_note=None,
+    )
 
 
 class LiveFetcher:
     def fetch_shop(self, ref):
-        return Fetched(ref.shop_id or 123456789)
+        return fetched(ref.shop_id or 123456789)
 
 
 class BlockedFetcher:
